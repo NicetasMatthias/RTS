@@ -70,17 +70,20 @@ int main (int argc, char *argv[])
     pthread_t t;
     printf ("Start\n");
 
+    //-- Задаем маску блокировки сигналов
     sigset_t set;
     sigemptyset (&set);
     sigaddset (&set, sigUp);
     sigaddset (&set, sigDown);
 
-    printf ("Block Signals\n");
+    //-- Блокируем обработку сигналов до настройки обработчика (по маске)
+    if (DEBUG) printf ("Block Signals\n");
     pthread_sigmask (SIG_BLOCK, &set, NULL);
 
+    //-- Запускаем тред (маску блокировки передаем в качестве аргумента
     pthread_create (&t, NULL, &pushButton, &set);
-
     pthread_join (t, NULL);
+
     printf ("Finish\n");
     return EXIT_SUCCESS;
 }
@@ -88,8 +91,10 @@ int main (int argc, char *argv[])
 
 void* pushButton (void* args)
 {
+    //-- Вытаскиваю маску из аргументов
     sigset_t *set = (sigset_t *) args;
 
+    //-- Задаем наш собственный обработчик сигналов для выбранных сигналов
     struct sigaction act;
     act.sa_sigaction = &liftControl;
     act.sa_flags = SA_SIGINFO;
@@ -97,8 +102,12 @@ void* pushButton (void* args)
     sigaction(sigUp, &act, NULL);
     sigaction(sigDown, &act, NULL);
 
+    //-- Разблокируем обработку сигналов
     if (DEBUG) printf ("Unblock Signals\n");
     pthread_sigmask(SIG_UNBLOCK, set, NULL);
+
+    //-- Выводим сообщение со стартовым состоянием лифта (этажом)
+    printf("**** Current floor: %s\n", liftState[LiftStateStrings]);
 
     while (true)
     {
@@ -122,18 +131,18 @@ void* pushButton (void* args)
 void liftControl (int sigNumber, siginfo_t* info, void* nk)
 {
 
-    if (DEBUG) printf ("[liftControl] receive signal\n");
     //-- Сначала в любом случае лифт должен приехать на наш этаж
     changeState (ThisFloor);
 
+    //-- Затем отправляем лифт на этаж, соответствующий нажатой кнопке
     if (sigNumber == sigUp)
     {
-        if (DEBUG) printf ("[liftControl] receive signal \"sigUp\"\n");
+        if (DEBUG) printf ("[liftControl] received signal \"sigUp\"\n");
         changeState (Top);
     }
     else if (sigNumber == sigDown)
     {
-        if (DEBUG) printf ("[liftControl] receive signal \"sigDown\"\n");
+        if (DEBUG) printf ("[liftControl] received signal \"sigDown\"\n");
         changeState (Bottom);
     }
     else
@@ -163,6 +172,7 @@ void changeState (LiftState targetState)
                 printf("*** Go UP\n");
                 usleep(500000);
             }
+            //-- Меняем состояние лифта
             liftState++;
         }
         //-- Если лифт находится выше целевого этажа, едем вниз
@@ -173,15 +183,17 @@ void changeState (LiftState targetState)
                 printf("*** Go DOWN\n");
                 usleep(500000);
             }
+            //-- Меняем состояние лифта
             liftState--;
         }
+        //-- Выводим сообщение с текущим состоянием лифта (этажом)
         printf("**** Current floor: %s\n", liftState[LiftStateStrings]);
     }
 
     //-- Имитируем открытие дверей, если лифт приехал на наш этаж
     if (targetState == ThisFloor)
     {
-        printf ("This Floor, doors is opened\n");
+        printf ("Doors is opened\n");
         sleep (1);
         printf ("Doors closed\n");
     }
