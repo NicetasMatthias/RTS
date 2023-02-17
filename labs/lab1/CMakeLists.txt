@@ -3,11 +3,6 @@ cmake_minimum_required(VERSION 3.5)
 project(lab1 LANGUAGES C)
 
 set(LAB_NUMBER "1")
-set(NAME "Matveev")
-set(GROUP "8362")
-
-
-set(REPORTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../reports/")
 
 file(GLOB_RECURSE SRC_LIST
     "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
@@ -25,7 +20,6 @@ if(CMAKE_THREAD_LIBS_INIT)
   target_link_libraries(lab1 "${CMAKE_THREAD_LIBS_INIT}")
 endif()
 
-message (${REPORTS_DIR})
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/main.c"
         DESTINATION "${REPORTS_DIR}")
 file(RENAME "${REPORTS_DIR}/main.c" "${REPORTS_DIR}/T${LAB_NUMBER}_${NAME}_${GROUP}.c")
