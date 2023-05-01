@@ -4,12 +4,12 @@ project(lab3 LANGUAGES C)
 
 set(LAB_NUMBER "3")
 
-file(GLOB_RECURSE SRC_LIST
+file(GLOB_RECURSE SRC_LIST_3
     "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
 
 add_executable(lab3
-    ${SRC_LIST})
+    ${SRC_LIST_3})
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)

@@ -1,27 +1,31 @@
 //-------------------------------------------------------
 //    Выполнил: Матвеев Никита группа 8362
-//    Задание: 2 "Вызов лифта"
-//    Дата выполнения: 16.02.2023
+//    Задание: 3 "Поставщик – Потребитель"
+//    Дата выполнения: 01.05.2023
 //    Версия: 0.1
 //-------------------------------------------------------
 //    Последовательность команд для запуска программы
-//        gcc T2_Matveev_8362.c -o T2_Matveev_8362 -pthread
-//        chmod +x T2_Matveev_8362
-//        ./T2_Matveev_8362
+//        gcc T3_Matveev_8362.c -o T3_Matveev_8362 -pthread
+//        chmod +x T3_Matveev_8362
+//        ./T3_Matveev_8362
 //-------------------------------------------------------
-//    Программа запускает дочерний поток, в котором выполняется
-//      обработка ввода пользователя и вызов соответствующего
-//      вводу сигнала (Up или Down) или завершение программы
-//      обработки. Обработчик данных сигналов запускает эмуляцию
-//      работы лифта в соответствии с нажимаемыми кнопками
-//      вызова лифта
+//     Семафоры.
+//      В начале каждого цикла перед началом
+//      «критической секции кода» происходит «захват» семафора и его освобождение
+//      после окончания «критической секции».
+//
+//     Условные переменные
+//      Перед и после «критической секции» кода в каждом цикле
+//      происходит захват и освобождение мьютекса соответственно. Внутри
+//      «критической секции» производится проверка значения buffer
 //-------------------------------------------------------
 
 #include <stdio.h>      //!< Стандартная библиотека ввода\вывода
 #include <stdlib.h>     //!< Стандартная библиотека функций
-#include <signal.h>     //!< Библиотека для работы с сигналами
 #include <pthread.h>    //!< Библиотека для работы с потоками
 #include <unistd.h>     //!< Библиотека API POSIX
+#include <semaphore.h>  //!< Библиотека семафоров
+#include <errno.h>      //!< Библиотека для подробного вывода ошибок
 
 //! \brief Определение типа булевых переменных
 typedef enum
@@ -30,208 +34,357 @@ typedef enum
     true  = 1
 } bool;
 
-#define DEBUG false
+#define DEBUG true
 
-//! \brief Перечисление описывающее возможные состояния лифта
 typedef enum
 {
-    Top         = 2,    //!< Лифт выше нашего этажа
-    ThisFloor   = 1,    //!< Лифт на нашем этаже
-    Bottom      = 0,    //!< Лифт ниже нашего этажа
-} LiftState;
-static LiftState liftState = ThisFloor; //!< Переменная, содержащее текущее положение лифта
+    Semaphore = 0,  //!< Режим синхронизации с помощью семафоров
+    Cond,           //!< Режим синхронизации с помощью условных переменных
+} SyncMode;
 
-static const char bottomString[]    = "Bottom floor";
-static const char currentString[]   = "This floor";
-static const char topString[]       = "Top floor";
-//! Текстовое представление элементов LiftState
-static const char* LiftStateStrings[] = {bottomString, currentString, topString};
+static SyncMode syncMode = Cond;
 
-#define duration 3 //!< Константа указывающая сколько циклов необходимо для смены состояния (этажа)
+sem_t s; //!< Идентификатор семафора
 
-#define sigUp   SIGRTMIN
-#define sigDown SIGRTMIN + 1
+pthread_cond_t condRead;    //!< Индентификатор условной переменной для чтения
+pthread_cond_t condWrite;   //!< Индентификатор условной переменной для записи
+pthread_mutex_t mutex;      //!< Индентификатор мьютекса
 
-//! \brief Функция для обработки ввода пользователя и вызова соответствующих методов
-void* pushButton (void* args);
+static int buffer = 5;
+static const int bufferMax = 10;
+static const int bufferMin = 0;
 
-//! \brief Функция обработчик сигналов
-//! \param signo - Номер сигнала
-void liftControl(int signo, siginfo_t* info, void* nk);
+#define TIME_CONSUMER 3 //!< Период обращения к переменной потребителя
+#define TIME_SUPPLIER 1 //!< Период обращения к переменной поставщика
+
+//! \brief Функция потока потребителя
+void* Consumer (void* args);
+
+//! \brief Функция потока поставщика
+void* Supplier (void* args);
 
 
-//! \brief Функция реализующая смену состояния
-//!     (По сути движение самого лифта)
-//! \param targetState - Состояние к которому мы хотим перейти
-void changeState (LiftState targetState);
 
 int main (int argc, char *argv[])
 {
-    pthread_t t;
-    printf ("Start\n");
+    if (syncMode == Semaphore)
+    {
+        if (sem_init (&s, 0, 1))
+        {
+            if (DEBUG)
+            {
+                perror ("#!# sem_init() ");
+            }
+            return EXIT_FAILURE;
+        }
+        else
+        {
+            if (DEBUG)
+            {
+                printf ("## Semaphore initialized successfully\n");
+            }
+        }
+    }
+    else if (syncMode == Cond)
+    {
+        if (pthread_cond_init(&condRead, NULL))
+        {
+            if (DEBUG)
+            {
+                perror ("#!# pthread_cond_init() ");
+            }
+            return EXIT_FAILURE;
+        }
+        else
+        {
+            if (DEBUG)
+            {
+                printf ("## Pthread_cond initialized successfully\n");
+            }
+        }
+        if (pthread_cond_init(&condWrite, NULL))
+        {
+            if (DEBUG)
+            {
+                perror ("#!# pthread_cond_init() ");
+            }
+            return EXIT_FAILURE;
+        }
+        else
+        {
+            if (DEBUG)
+            {
+                printf ("## Pthread_cond initialized successfully\n");
+            }
+        }
 
-    //-- Задаем маску блокировки сигналов
-    sigset_t set;
-    sigemptyset (&set);
-    sigaddset (&set, sigUp);
-    sigaddset (&set, sigDown);
+        if (pthread_mutex_init(&mutex, NULL))
+        {
+            if (DEBUG)
+            {
+                perror ("#!# pthread_mutex_init() ");
+            }
+            return EXIT_FAILURE;
+        }
+        else
+        {
+            if (DEBUG)
+            {
+                printf ("## Mutex initialized successfully\n");
+            }
+        }
+    }
+    else
+    {
+        if (DEBUG)
+        {
+            printf ("## Undefined value of \"syncMode\"\n");
+        }
+    }
+    bool stopFlag = false;
 
-    //-- Блокируем обработку сигналов до настройки обработчика (по маске)
-    if (DEBUG) printf ("Block Signals\n");
-    pthread_sigmask (SIG_BLOCK, &set, NULL);
+    pthread_t threadCons, threadSup;
+    pthread_create(&threadCons, NULL, &Consumer, &stopFlag);
+    pthread_create(&threadSup, NULL, &Supplier, &stopFlag);
 
-    //-- Запускаем тред (маску блокировки передаем в качестве аргумента
-    pthread_create (&t, NULL, &pushButton, &set);
-    pthread_join (t, NULL);
+    getchar ();
+    stopFlag = true;
 
-    printf ("Finish\n");
+    pthread_join(threadCons, NULL);
+    pthread_join(threadSup, NULL);
+
+
+    if (syncMode == Semaphore)
+    {
+        if (sem_destroy (&s))
+        {
+            if (DEBUG)
+            {
+                perror("#!# sem_destroy() ");
+            }
+            return EXIT_FAILURE;
+        }
+        else
+        {
+            if (DEBUG)
+            {
+                printf ("## Semaphore destroyed successfully\n");
+            }
+        }
+    }
+    else if (syncMode == Cond)
+    {
+        if (pthread_cond_destroy (&condRead))
+        {
+            if (DEBUG)
+            {
+                perror("#!# pthread_cond_destroy() ");
+            }
+            return EXIT_FAILURE;
+        }
+        else
+        {
+            if (DEBUG)
+            {
+                printf ("## Pthread_cond destroyed successfully\n");
+            }
+        }
+        if (pthread_cond_destroy (&condWrite))
+        {
+            if (DEBUG)
+            {
+                perror("#!# pthread_cond_destroy() ");
+            }
+            return EXIT_FAILURE;
+        }
+        else
+        {
+            if (DEBUG)
+            {
+                printf ("## Pthread_cond destroyed successfully\n");
+            }
+        }
+
+        if (pthread_mutex_destroy (&mutex))
+        {
+            if (DEBUG)
+            {
+                perror("#!# pthread_mutex_destroy() ");
+            }
+            return EXIT_FAILURE;
+        }
+        else
+        {
+            if (DEBUG)
+            {
+                printf ("## Mutex destroyed successfully\n");
+            }
+        }
+    }
+    else
+    {
+        if (DEBUG)
+        {
+            printf ("## Undefined value of \"syncMode\"\n");
+        }
+    }
+    return EXIT_SUCCESS;
+}
+
+void* Consumer (void* args)
+{
+    bool *stopFlag = (bool *) args;
+    if (syncMode == Semaphore)
+    {
+        while(!(*stopFlag))
+        {
+            //-- Критическая секция
+            sem_wait (&s);
+            if (buffer > bufferMin)
+            {
+                buffer--;
+                printf ("*** Consumer modify buffer to: %d\n", buffer);
+            }
+            else
+            {
+                printf ("* Consumer cannot modify buffer because the value is minimum: %d\n", buffer);
+            }
+            sem_post (&s);
+            //--
+
+            sleep (TIME_CONSUMER);
+        }
+
+    }
+    else if (syncMode == Cond)
+    {
+        while(!(*stopFlag))
+        {
+            //-- Критическая секция
+            pthread_mutex_lock (&mutex);
+            if (buffer <= bufferMin)
+            {
+                printf ("* Consumer cannot modify buffer because the value is minimum: %d. Waiting\n", buffer);
+                pthread_cond_wait (&condRead, &mutex);
+            }
+            buffer--;
+            printf ("*** Consumer modify buffer to: %d\n", buffer);
+            pthread_cond_signal (&condWrite);
+            pthread_mutex_unlock (&mutex);
+            //--
+
+            sleep (TIME_CONSUMER);
+        }
+    }
+    else
+    {
+        if (DEBUG)
+        {
+            printf ("## Undefined value of \"syncMode\"\n");
+        }
+    }
+
+    return EXIT_SUCCESS;
+}
+
+void* Supplier (void* args)
+{
+    bool *stopFlag = (bool *) args;
+    if (syncMode == Semaphore)
+    {
+        while(!(*stopFlag))
+        {
+            //-- Критическая секция
+            sem_wait (&s);
+            if (buffer < bufferMax)
+            {
+                buffer++;
+                printf ("*** Supplier modify buffer to: %d\n", buffer);
+            }
+            else
+            {
+                printf ("* Supplier cannot modify buffer because the value is maximum: %d\n", buffer);
+            }
+            sem_post (&s);
+            //--
+
+            sleep (TIME_SUPPLIER);
+        }
+    }
+    else if (syncMode == Cond)
+    {
+        while(!(*stopFlag))
+        {
+            //-- Критическая секция
+            pthread_mutex_lock (&mutex);
+            if (buffer >= bufferMax){
+                printf ("* Supplier cannot modify buffer because the value is maximum: %d. Waiting\n", buffer);
+                pthread_cond_wait (&condWrite, &mutex);
+            }
+            buffer++;
+            printf ("*** Supplier modify buffer to: %d\n", buffer);
+            pthread_cond_signal (&condRead);
+            pthread_mutex_unlock (&mutex);
+            //--
+            sleep (TIME_SUPPLIER);
+        }
+    }
+    else
+    {
+        if (DEBUG)
+        {
+            printf ("## Undefined value of \"syncMode\"\n");
+        }
+    }
     return EXIT_SUCCESS;
 }
 
 
-void* pushButton (void* args)
-{
-    //-- Вытаскиваю маску из аргументов
-    sigset_t *set = (sigset_t *) args;
-
-    //-- Задаем наш собственный обработчик сигналов для выбранных сигналов
-    struct sigaction act;
-    act.sa_sigaction = &liftControl;
-    act.sa_flags = SA_SIGINFO;
-    act.sa_mask = *set;
-    sigaction(sigUp, &act, NULL);
-    sigaction(sigDown, &act, NULL);
-
-    //-- Разблокируем обработку сигналов
-    if (DEBUG) printf ("Unblock Signals\n");
-    pthread_sigmask(SIG_UNBLOCK, set, NULL);
-
-    //-- Выводим сообщение со стартовым состоянием лифта (этажом)
-    printf("**** Current floor: %s\n", liftState[LiftStateStrings]);
-
-    while (true)
-    {
-        char ch = getchar ();
-        switch (ch)
-        {
-        case 'u':
-            raise (sigUp);
-            break;
-        case 'd':
-            raise (sigDown);
-            break;
-        case 'q':
-            pthread_exit(EXIT_SUCCESS);
-        default:
-            break;
-        };
-    }
-}
-
-void liftControl (int sigNumber, siginfo_t* info, void* nk)
-{
-
-    //-- Сначала в любом случае лифт должен приехать на наш этаж
-    changeState (ThisFloor);
-
-    //-- Затем отправляем лифт на этаж, соответствующий нажатой кнопке
-    if (sigNumber == sigUp)
-    {
-        if (DEBUG) printf ("[liftControl] received signal \"sigUp\"\n");
-        changeState (Top);
-    }
-    else if (sigNumber == sigDown)
-    {
-        if (DEBUG) printf ("[liftControl] received signal \"sigDown\"\n");
-        changeState (Bottom);
-    }
-    else
-    {
-        if (DEBUG) printf ("[liftControl] undefined signal number\n\tSignalNumber: %d\n", sigNumber);
-    }
-    return;
-}
-
-void changeState (LiftState targetState)
-{
-    //-- Проверка на корректность переданного аргумента
-    if (targetState < 0 || targetState > 2)
-    {
-        printf ("[changeState] undefined targetState\n\ttargetState: %d\n", targetState);
-    }
-
-    //-- Проверяем что нам действительно необходимо двигаться
-    //--    т.е. что мы еще не находимся на целевом этаже
-    while (liftState != targetState)
-    {
-        //-- Если лифт находится ниже целевого этажа, едем вверх
-        if (liftState < targetState)
-        {
-            for(int i = 0; i < duration; i++)
-            {
-                printf("*** Go UP\n");
-                usleep(500000);
-            }
-            //-- Меняем состояние лифта
-            liftState++;
-        }
-        //-- Если лифт находится выше целевого этажа, едем вниз
-        else
-        {
-            for(int i = 0; i < duration; i++)
-            {
-                printf("*** Go DOWN\n");
-                usleep(500000);
-            }
-            //-- Меняем состояние лифта
-            liftState--;
-        }
-        //-- Выводим сообщение с текущим состоянием лифта (этажом)
-        printf("**** Current floor: %s\n", liftState[LiftStateStrings]);
-    }
-
-    //-- Имитируем открытие дверей, если лифт приехал на наш этаж
-    if (targetState == ThisFloor)
-    {
-        printf ("Doors is opened\n");
-        sleep (1);
-        printf ("Doors closed\n");
-    }
-
-    return;
-}
-
 //LOG:
-//    Start
-//    Block Signals
-//    u
-//    This Floor, doors is opened
-//    Doors closed
-//    *** Go UP
-//    *** Go UP
-//    *** Go UP
-//    **** Current floor: Top floor
-//    d
-//    *** Go DOWN
-//    *** Go DOWN
-//    *** Go DOWN
-//    **** Current floor: This floor
-//    This Floor, doors is opened
-//    Doors closed
-//    *** Go DOWN
-//    *** Go DOWN
-//    *** Go DOWN
-//    **** Current floor: Bottom floor
-//    d
-//    *** Go UP
-//    *** Go UP
-//    *** Go UP
-//    **** Current floor: This floor
-//    This Floor, doors is opened
-//    Doors closed
-//    *** Go DOWN
-//    *** Go DOWN
-//    *** Go DOWN
-//    **** Current floor: Bottom floor
-//    q
-//    Finish
+//  Вариант 1 (Семафоры)
+//## Semaphore initialized successfully
+//*** Consumer modify buffer to: 4
+//*** Supplier modify buffer to: 5
+//*** Supplier modify buffer to: 6
+//*** Supplier modify buffer to: 7
+//*** Consumer modify buffer to: 6
+//*** Supplier modify buffer to: 7
+//*** Supplier modify buffer to: 8
+//*** Supplier modify buffer to: 9
+//*** Consumer modify buffer to: 8
+//*** Supplier modify buffer to: 9
+//*** Supplier modify buffer to: 10
+//* Supplier cannot modify buffer because the value is maximum: 10
+//*** Consumer modify buffer to: 9
+//*** Supplier modify buffer to: 10
+//* Supplier cannot modify buffer because the value is maximum: 10
+//* Supplier cannot modify buffer because the value is maximum: 10
+//*** Consumer modify buffer to: 9
+//*** Supplier modify buffer to: 10
+
+//## Semaphore destroyed successfully
+
+//
+//  Вариант 2 (Условные переменные)
+//## Pthread_cond initialized successfully
+//## Pthread_cond initialized successfully
+//## Mutex initialized successfully
+//*** Consumer modify buffer to: 4
+//*** Supplier modify buffer to: 5
+//*** Supplier modify buffer to: 6
+//*** Supplier modify buffer to: 7
+//*** Consumer modify buffer to: 6
+//*** Supplier modify buffer to: 7
+//*** Supplier modify buffer to: 8
+//*** Supplier modify buffer to: 9
+//*** Consumer modify buffer to: 8
+//*** Supplier modify buffer to: 9
+//*** Supplier modify buffer to: 10
+//* Supplier cannot modify buffer because the value is maximum: 10. Waiting
+//*** Consumer modify buffer to: 9
+//*** Supplier modify buffer to: 10
+//
+//## Pthread_cond destroyed successfully
+//## Pthread_cond destroyed successfully
+//## Mutex destroyed successfully
+
